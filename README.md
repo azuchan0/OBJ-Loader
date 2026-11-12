@@ -1,6 +1,6 @@
 # OBJ Loader
 
-A small header-only Wavefront OBJ loader for the OpenGL project.
+A small header-only Wavefront OBJ loader for OpenGL
 
 ## Usage
 
