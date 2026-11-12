@@ -1,197 +1,251 @@
 #pragma once
+
+#include <glm/glm.hpp>
 #include <vector>
-#include <string>
 #include <fstream>
-#include <unordered_map>
-#include <cstring>
+#include <sstream>
+#include <string>
+#include <stdexcept>
 
-struct Vertex
-{
-    float pos[3];
-    float uv[2];
-    float normal[3];
-
-    bool operator==(const Vertex& other) const {
-        return pos[0] == other.pos[0] &&
-            pos[1] == other.pos[1] &&
-            pos[2] == other.pos[2] &&
-            uv[0] == other.uv[0] &&
-            uv[1] == other.uv[1] &&
-            normal[0] == other.normal[0] &&
-            normal[1] == other.normal[1] &&
-            normal[2] == other.normal[2];
-    }
+struct ObjVertex {
+	glm::vec3 position{ 0.0f };
+	glm::vec2 texCoord{ 0.0f }; 
+	glm::vec3 normal{ 0.0f };
 };
 
-struct VertexHasher
+struct ObjMesh {
+	std::vector<glm::vec3> positions;
+	std::vector<glm::vec2> texCoords;
+	std::vector<glm::vec3> normals;
+	std::vector<ObjVertex> vertices;
+};
+
+inline bool loadObjAttributes(const std::string& path, ObjMesh& mesh, std::string& error) {
+	std::ifstream file(path);
+	if (!file) {
+		error = "Could not open OBJ file: " + path;
+		return false;
+	}
+	std::vector<glm::vec3> positions;
+	std::vector<glm::vec2> texCoords;
+	std::vector<glm::vec3> normals;
+	std::string line;
+	std::size_t lineNumber = 0;
+
+	while (std::getline(file, line)) {
+		++lineNumber;
+		
+		std::istringstream row(line);
+		std::string type;
+
+		if (!(row >> type) || type[0] == '#') continue;
+
+		if (type == "v") {
+			glm::vec3 position;
+			if (!(row >> position.x >> position.y >> position.z)) {
+				error = "Malformed vertex at line " + std::to_string(lineNumber);
+				return false;
+			}
+			positions.push_back(position);
+		}
+		else if (type == "vt") {
+			glm::vec2 texCoord;
+			if (!(row >> texCoord.x >> texCoord.y)) {
+				error = "Malformed texture coordinate at line " + std::to_string(lineNumber);
+				return false;
+			}
+			texCoords.push_back(texCoord);
+		}
+		else if (type == "vn") {
+			glm::vec3 normal;
+			if (!(row >> normal.x >> normal.y >> normal.z)) {
+				error = "Malformed normal at line " + std::to_string(lineNumber);
+				return false;
+			}
+			normals.push_back(normal);
+		}
+	}
+
+	if (positions.empty()) {
+		error = "No vertex positions were found in OBJ file";
+		return false;
+	}
+
+	mesh.positions.swap(positions);
+	mesh.texCoords.swap(texCoords);
+	mesh.normals.swap(normals);
+	mesh.vertices.clear();
+	error.clear();
+	return true;
+}
+
+inline bool resolveObjIndex(const std::string& text, std::size_t count, std::size_t& index) {
+	if (text.empty())
+		return false;
+
+	try {
+		std::size_t parsedChars = 0;
+		const int objIndex = std::stoi(text, &parsedChars);
+		if (parsedChars != text.size() || objIndex == 0)
+			return false;
+
+		const long long resolved = objIndex > 0
+			? static_cast<long long>(objIndex) - 1
+			: static_cast<long long>(count) + objIndex;
+		if (resolved < 0 || resolved >= static_cast<long long>(count))
+			return false;
+
+		index = static_cast<std::size_t>(resolved);
+		return true;
+	}
+	catch (const std::exception&) {
+		return false;
+	}
+}
+
+inline bool parseObjFaceVertex(
+	const std::string& token,
+	std::size_t positionCount,
+	std::size_t texCoordCount,
+	std::size_t normalCount,
+	const ObjMesh& mesh,
+	ObjVertex& vertex)
 {
-    size_t operator()(const Vertex& vertex) const {
-        size_t hash = 0;
-        const float* f = reinterpret_cast<const float*>(&vertex);
-        for (int i = 0; i < 8; i++) {
-            hash ^= std::hash<float>{}(f[i]) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+	const std::size_t firstSlash = token.find('/');
+	const std::string positionText = token.substr(0, firstSlash);
+	std::size_t index = 0;
+
+	if (!resolveObjIndex(positionText, positionCount, index))
+		return false;
+	vertex.position = mesh.positions[index];
+
+	if (firstSlash == std::string::npos)
+		return true;
+
+	const std::size_t secondSlash = token.find('/', firstSlash + 1);
+	const std::string texCoordText = token.substr(
+		firstSlash + 1,
+		secondSlash == std::string::npos ? std::string::npos : secondSlash - firstSlash - 1);
+	if (!texCoordText.empty()) {
+		if (!resolveObjIndex(texCoordText, texCoordCount, index))
+			return false;
+		vertex.texCoord = mesh.texCoords[index];
+	}
+
+	if (secondSlash == std::string::npos)
+		return true;
+	if (token.find('/', secondSlash + 1) != std::string::npos)
+		return false;
+
+	const std::string normalText = token.substr(secondSlash + 1);
+	if (!normalText.empty()) {
+		if (!resolveObjIndex(normalText, normalCount, index))
+			return false;
+		vertex.normal = mesh.normals[index];
+	}
+
+	return true;
+}
+
+
+inline bool loadObj(
+    const std::string& path,
+    ObjMesh& mesh,
+    std::string& error)
+{
+    ObjMesh parsed;
+    if (!loadObjAttributes(path, parsed, error))
+        return false;
+
+    std::ifstream file(path);
+    if (!file) {
+        error = "Could not reopen OBJ file: " + path;
+        return false;
+    }
+
+    std::string line;
+    std::size_t lineNumber = 0;
+    std::size_t positionsSeen = 0;
+    std::size_t texCoordsSeen = 0;
+    std::size_t normalsSeen = 0;
+
+    while (std::getline(file, line)) {
+        ++lineNumber;
+
+        std::istringstream row(line);
+        std::string type;
+        if (!(row >> type) || type[0] == '#')
+            continue;
+
+        if (type == "v") {
+            ++positionsSeen;
+            continue;
         }
-        return hash;
-    }
-};
+        if (type == "vt") {
+            ++texCoordsSeen;
+            continue;
+        }
+        if (type == "vn") {
+            ++normalsSeen;
+            continue;
+        }
+        if (type != "f")
+            continue;
 
-class OBJLoader
-{
-public:
-    std::vector<Vertex> out_vertices;
-    std::vector<unsigned int> out_indices;
-    glm::vec3 diffuseColor = glm::vec3(0.0f, 0.2f, 0.8f); // Par défaut bleu Bugatti
+        std::vector<ObjVertex> face;
+        std::string token;
 
-    bool load(const std::string& path)
-    {
-        std::ifstream file(path);
-        if (!file.is_open()) return false;
-
-        std::vector<float> temp_pos;
-        std::vector<float> temp_uv;
-        std::vector<float> temp_normals;
-        std::unordered_map<Vertex, unsigned int, VertexHasher> uniqueVertices;
-
-        std::string line;
-        std::string mtlFile;
-
-        // Première passe pour trouver le mtllib
-        file.clear();
-        file.seekg(0, std::ios::beg);
-        while (std::getline(file, line)) {
-            if (line.rfind("mtllib ", 0) == 0) {
-                mtlFile = line.substr(7);
+        while (row >> token) {
+            if (token[0] == '#')
                 break;
-            }
-        }
-        // Lecture du MTL si trouvé
-        if (!mtlFile.empty()) {
-            // Récupère le dossier du .obj
-            std::string objDir = path.substr(0, path.find_last_of("/\\") + 1);
-            std::ifstream mtl(objDir + mtlFile);
-            if (mtl.is_open()) {
-                std::string mline;
-                while (std::getline(mtl, mline)) {
-                    if (mline.rfind("Kd ", 0) == 0) {
-                        float r, g, b;
-                        if (sscanf_s(mline.c_str(), "Kd %f %f %f", &r, &g, &b) == 3) {
-                            diffuseColor = glm::vec3(r, g, b);
-                        }
-                    }
-                }
-            }
-        }
-        file.clear();
-        file.seekg(0, std::ios::beg);
 
-        while (std::getline(file, line))
-        {
-            if (line.rfind("v ", 0) == 0)
-            {
-                float x, y, z;
-                sscanf_s(line.c_str(), "v %f %f %f", &x, &y, &z);
-                temp_pos.insert(temp_pos.end(), { x, y, z });
+            ObjVertex vertex;
+            if (!parseObjFaceVertex(
+                    token, positionsSeen, texCoordsSeen, normalsSeen, parsed, vertex)) {
+                error = "Invalid face index at line "
+                    + std::to_string(lineNumber);
+                return false;
             }
-            else if (line.rfind("vt ", 0) == 0)
-            {
-                float u, v;
-                sscanf_s(line.c_str(), "vt %f %f", &u, &v);
-                temp_uv.insert(temp_uv.end(), { u, v });
-            }
-            else if (line.rfind("vn ", 0) == 0)
-            {
-                float x, y, z;
-                sscanf_s(line.c_str(), "vn %f %f %f", &x, &y, &z);
-                temp_normals.insert(temp_normals.end(), { x, y, z });
-            }
-            else if (line.rfind("f ", 0) == 0)
-            {
-                process(line, temp_pos, temp_uv, temp_normals, uniqueVertices);
-            }
+            face.push_back(vertex);
         }
 
-        return true;
-    }
-
-private:
-
-    struct ObjIndex { int v = 0, vt = 0, vn = 0; };
-
-    void process(
-        const std::string& line,
-        const std::vector<float>& pos,
-        const std::vector<float>& uv,
-        const std::vector<float>& norm,
-        std::unordered_map<Vertex, unsigned int, VertexHasher>& uniqueVertices)
-    {
-        std::vector<ObjIndex> face;
-
-        const char* ptr = line.c_str() + 2;
-        int v, vt, vn, offset;
-
-        while (*ptr)
-        {
-            vt = 0;
-            vn = 0;
-
-            if (sscanf_s(ptr, "%d/%d/%d%n", &v, &vt, &vn, &offset) == 3) {}
-            else if (sscanf_s(ptr, "%d//%d%n", &v, &vn, &offset) == 2) {}
-            else if (sscanf_s(ptr, "%d/%d%n", &v, &vt, &offset) == 2) {}
-            else if (sscanf_s(ptr, "%d%n", &v, &offset) == 1) {}
-            else break;
-
-            face.push_back({ v, vt, vn });
-            ptr += offset;
+        if (face.size() < 3) {
+            error = "Face has fewer than 3 vertices at line "
+                + std::to_string(lineNumber);
+            return false;
         }
 
-        if (face.size() < 3) return;
+        // Turn a polygon into triangles: (0,1,2), (0,2,3), ...
+        for (std::size_t i = 1; i + 1 < face.size(); ++i) {
+            ObjVertex a = face[0];
+            ObjVertex b = face[i];
+            ObjVertex c = face[i + 1];
 
-        for (size_t i = 1; i + 1 < face.size(); i++)
-        {
-            int idxs[3] = { 0, (int)i, (int)i + 1 };
+            glm::vec3 faceNormal = glm::cross(b.position - a.position, c.position - a.position);
+            if (glm::dot(faceNormal, faceNormal) > 0.000001f)
+                faceNormal = glm::normalize(faceNormal);
+            else
+                faceNormal = glm::vec3(0.0f, 0.0f, 1.0f);
 
-            for (int j = 0; j < 3; j++)
-            {
-                ObjIndex& id = face[idxs[j]];
-                Vertex vertex{};
+            if (glm::dot(a.normal, a.normal) < 0.000001f) a.normal = faceNormal;
+            if (glm::dot(b.normal, b.normal) < 0.000001f) b.normal = faceNormal;
+            if (glm::dot(c.normal, c.normal) < 0.000001f) c.normal = faceNormal;
 
-                if (id.v > 0)
-                {
-                    int p = (id.v - 1) * 3;
-                    vertex.pos[0] = pos[p];
-                    vertex.pos[1] = pos[p + 1];
-                    vertex.pos[2] = pos[p + 2];
-                }
-
-                if (id.vt > 0)
-                {
-                    int t = (id.vt - 1) * 2;
-                    if (t + 1 < (int)uv.size())
-                    {
-                        vertex.uv[0] = uv[t];
-                        vertex.uv[1] = 1.0f - uv[t + 1]; // FIX OpenGL
-                    }
-                }
-
-                if (id.vn > 0)
-                {
-                    int n = (id.vn - 1) * 3;
-                    if (n + 2 < (int)norm.size())
-                    {
-                        vertex.normal[0] = norm[n];
-                        vertex.normal[1] = norm[n + 1];
-                        vertex.normal[2] = norm[n + 2];
-                    }
-                }
-
-                if (uniqueVertices.find(vertex) == uniqueVertices.end())
-                {
-                    uniqueVertices[vertex] = (unsigned int)out_vertices.size();
-                    out_vertices.push_back(vertex);
-                }
-
-                out_indices.push_back(uniqueVertices[vertex]);
-            }
+            parsed.vertices.push_back(a);
+            parsed.vertices.push_back(b);
+            parsed.vertices.push_back(c);
         }
     }
-};
+
+    if (parsed.vertices.empty()) {
+        error = "No faces found in OBJ file.";
+        return false;
+    }
+
+    mesh.positions.swap(parsed.positions);
+    mesh.texCoords.swap(parsed.texCoords);
+    mesh.normals.swap(parsed.normals);
+    mesh.vertices.swap(parsed.vertices);
+    error.clear();
+    return true;
+}
