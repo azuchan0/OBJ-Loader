@@ -20,6 +20,8 @@ struct ObjMesh {
 	std::vector<ObjVertex> vertices;
 };
 
+
+
 inline bool loadObjAttributes(const std::string& path, ObjMesh& mesh, std::string& error) {
 	std::ifstream file(path);
 	if (!file) {
@@ -215,7 +217,6 @@ inline bool loadObj(
             return false;
         }
 
-        // Turn a polygon into triangles: (0,1,2), (0,2,3), ...
         for (std::size_t i = 1; i + 1 < face.size(); ++i) {
             ObjVertex a = face[0];
             ObjVertex b = face[i];
@@ -246,6 +247,66 @@ inline bool loadObj(
     mesh.texCoords.swap(parsed.texCoords);
     mesh.normals.swap(parsed.normals);
     mesh.vertices.swap(parsed.vertices);
+    error.clear();
+    return true;
+}
+
+
+struct ObjMaterial {
+    glm::vec3 diffuseColor{ 1.0f };
+    glm::vec3 specularColor{ 0.35f };
+    float shininess = 8.0f;
+};
+
+
+inline bool loadMtl(
+    const std::string& path,
+    const std::string& wantedName,
+    ObjMaterial& material,
+    std::string& error)
+{
+    std::ifstream file(path);
+    if (!file) {
+        error = "Could not open MTL file: " + path;
+        return false;
+    }
+
+    bool inMaterial = false;
+    bool found = false;
+    std::string line;
+
+    while (std::getline(file, line)) {
+        std::istringstream row(line);
+        std::string type;
+        if (!(row >> type) || type[0] == '#')
+            continue;
+
+        if (type == "newmtl") {
+            std::string name;
+            row >> name;
+            inMaterial = (name == wantedName);
+            found = found || inMaterial;
+        }
+        else if (inMaterial && type == "Kd") {
+            row >> material.diffuseColor.r
+                >> material.diffuseColor.g
+                >> material.diffuseColor.b;
+        }
+        else if (inMaterial && type == "Ks") {
+            row >> material.specularColor.r
+                >> material.specularColor.g
+                >> material.specularColor.b;
+        }
+        else if (inMaterial && type == "Ns") {
+            row >> material.shininess;
+        }
+    }
+
+    if (!found) {
+        error = "Material not found in MTL: " + wantedName;
+        return false;
+    }
+
     error.clear();
     return true;
 }
